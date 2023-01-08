@@ -39,9 +39,9 @@ def main(channel):
         print("Sensor Error");
     os.read(dev, test) #turn the LED off
 
-def destroy(): #clean up
+def destroy(): #clean up 
+    os.read(dev, test) #turn the LED off
     GPIO.cleanup() 
-    os.read(dev, test) #turn the LED off        
 
 if __name__ == '__main__':
     setup()
