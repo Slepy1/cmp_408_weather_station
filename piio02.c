@@ -4,6 +4,8 @@
 //with
 //"static long int device_ioctl(struct file *file, unsigned int cmd, unsigned long arg){"
 
+//also some functions were removed to reduce the file size
+
 //this driver is used to turn the gpio pin to high or low
 //in order to controll the LED, my led is connected to pin 23
 
@@ -46,7 +48,7 @@ static int device_release(struct inode *inode, struct file *file){
 	module_put(THIS_MODULE);
 	return 0;
 }
-
+//have to include long otherwise i get wierd pointer error at compilation
 static long int device_ioctl(struct file *file, unsigned int cmd, unsigned long arg){
 	int i;
 	char *temp;
@@ -55,26 +57,6 @@ static long int device_ioctl(struct file *file, unsigned int cmd, unsigned long 
 	printk("piio: Device IOCTL invoked : 0x%x - %u\n" , cmd , cmd);
 
 	switch (cmd) {
-	case IOCTL_PIIO_READ:
-		strcpy(lkmdata.data ,"This is from lkm\0");
-		lkmdata.len = 101;
-		lkmdata.type = 'r';
-		copy_to_user((void *)arg, &lkmdata, sizeof(lkm_data));
-		printk("piio: IOCTL_PIIO_READ\n");
-		break;
-	case IOCTL_PIIO_WRITE:
-		copy_from_user(&lkmdata, (lkm_data *)arg, sizeof(lkm_data));
-		printk("piio: IOCTL_PIIO_WRITE  %s - %u - %c\n" , lkmdata.data , lkmdata.len , lkmdata.type);
-		break;
-	case IOCTL_PIIO_GPIO_READ:
-		memset(&apin , 0, sizeof(apin));
-		copy_from_user(&apin, (gpio_pin *)arg, sizeof(gpio_pin));
-		gpio_request(apin.pin, apin.desc);
-		apin.value = gpio_get_value(apin.pin);
-		strcpy(apin.desc, "LKMpin");
-		copy_to_user((void *)arg, &apin, sizeof(gpio_pin));
-		printk("piio: IOCTL_PIIO_GPIO_READ: pi:%u - val:%i - desc:%s\n" , apin.pin , apin.value , apin.desc);
-		break;
 	case IOCTL_PIIO_GPIO_WRITE:
 		copy_from_user(&apin, (gpio_pin *)arg, sizeof(gpio_pin));
 		gpio_request(apin.pin, apin.desc);
