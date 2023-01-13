@@ -1,102 +1,143 @@
-//this code is based on the char driver lkmdata
-//it was modified to turn on the LED when someting is written to it
-//and to turn the LED off when sometinh is read from here
-//honestly reconsider using this code, the previous code was way more efficient.....
+//This is modified GPIO driver piio.c made by Dr Abdul Razaq
+//the original code refused to to compile for me, it was fixed by replacing
+//"static int device_ioctl(struct file *file, unsigned int cmd, unsigned long arg){"
+//with
+//"static long int device_ioctl(struct file *file, unsigned int cmd, unsigned long arg){"
 
+//this driver is used to turn the gpio pin to high or low
+//in order to controll the LED, my led is connected to pin 23
+
+#include "piio.h"
+
+#include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/fs.h>
+#include <asm/uaccess.h>
+#include <linux/uaccess.h>
+
+#include <linux/gpio.h>
 #include <linux/cdev.h>
 #include <linux/device.h>
-#include <linux/uaccess.h>
-#include <linux/gpio.h>
+#include <linux/seq_file.h>
 
-static int Major = 400;
-#define  DEVICE_NAME "piiodev"
+static int DevBusy = 0;
+static int MajorNum = 100;
+static struct class*  ClassName  = NULL;
+static struct device* DeviceName = NULL;
 
-static struct class*  chardevClass  = NULL;
-static struct device* chardevDevice = NULL;
-#define  CLASS_NAME  "piiodata"
+lkm_data lkmdata;
+gpio_pin apin;
 
-typedef struct lkm_data {
-	unsigned char data[256];
-	unsigned long len;
-	char type;
-} LKM_DATA;
-LKM_DATA lkm_data;
+static int device_open(struct inode *inode, struct file *file){
+	printk(KERN_INFO "piio: device_open(%p)\n", file);
 
-MODULE_LICENSE("GPL");
-MODULE_AUTHOR("slepy");
-MODULE_DESCRIPTION("used to pass the GPIO to trun it on or off");
-MODULE_VERSION("0.3");
+	if (DevBusy)
+		return -EBUSY;
 
-
-static ssize_t lkmdata_read(struct file *file, char *buffer, size_t length, loff_t * offset){
-    pr_info("%s %u\n", __func__, length);
-    strcpy(lkm_data.data, "This is from LKM");
-    	lkm_data.len = 32;
-    	lkm_data.type = 'w';
-    	copy_to_user(buffer, &lkm_data, sizeof(lkm_data));
-
-	gpio_set_value(23, 0);
-   	gpio_unexport(23);
-   	gpio_free(23);
-    return 0;
+	DevBusy++;
+	try_module_get(THIS_MODULE);
+	return 0;
 }
 
+static int device_release(struct inode *inode, struct file *file){
+	printk(KERN_INFO "piio: device_release(%p)\n", file);
+	DevBusy--;
 
-static ssize_t lkmdata_write(struct file *file, const char *buffer, size_t length, loff_t * offset){
-    pr_info("%s %u\n", __func__, length);
-    copy_from_user(&lkm_data, buffer, length);
-
-    gpio_request(23, "Led"); //if have time modify this so that the data taken from userspace
-    gpio_direction_output(23, 1);// will be used as a GPIO
-    gpio_export(23, false);
-    gpio_set_value(23, 1);
-    return length;
+	module_put(THIS_MODULE);
+	return 0;
 }
 
-struct file_operations lkmdata_fops = {
-    .owner = THIS_MODULE,
-    .read = lkmdata_read,
-    .write = lkmdata_write,
+static long int device_ioctl(struct file *file, unsigned int cmd, unsigned long arg){
+	int i;
+	char *temp;
+	char ch;
+
+	printk("piio: Device IOCTL invoked : 0x%x - %u\n" , cmd , cmd);
+
+	switch (cmd) {
+	case IOCTL_PIIO_READ:
+		strcpy(lkmdata.data ,"This is from lkm\0");
+		lkmdata.len = 101;
+		lkmdata.type = 'r';
+		copy_to_user((void *)arg, &lkmdata, sizeof(lkm_data));
+		printk("piio: IOCTL_PIIO_READ\n");
+		break;
+	case IOCTL_PIIO_WRITE:
+		copy_from_user(&lkmdata, (lkm_data *)arg, sizeof(lkm_data));
+		printk("piio: IOCTL_PIIO_WRITE  %s - %u - %c\n" , lkmdata.data , lkmdata.len , lkmdata.type);
+		break;
+	case IOCTL_PIIO_GPIO_READ:
+		memset(&apin , 0, sizeof(apin));
+		copy_from_user(&apin, (gpio_pin *)arg, sizeof(gpio_pin));
+		gpio_request(apin.pin, apin.desc);
+		apin.value = gpio_get_value(apin.pin);
+		strcpy(apin.desc, "LKMpin");
+		copy_to_user((void *)arg, &apin, sizeof(gpio_pin));
+		printk("piio: IOCTL_PIIO_GPIO_READ: pi:%u - val:%i - desc:%s\n" , apin.pin , apin.value , apin.desc);
+		break;
+	case IOCTL_PIIO_GPIO_WRITE:
+		copy_from_user(&apin, (gpio_pin *)arg, sizeof(gpio_pin));
+		gpio_request(apin.pin, apin.desc);
+		gpio_direction_output(apin.pin, 0);
+		gpio_set_value(apin.pin, apin.value);
+		printk("piio: IOCTL_PIIO_GPIO_WRITE: pi:%u - val:%i - desc:%s\n" , apin.pin , apin.value , apin.desc);
+		break;
+	default:
+			printk("piio: command format error\n");
+	}
+
+	return 0;
+}
+
+struct file_operations Fops = {
+	.unlocked_ioctl = device_ioctl,
+	.open = device_open,
+	.release = device_release,
 };
 
 static int __init piio_init(void){
-	 printk(KERN_INFO "chardev: Initializing the chardev LKM\n");
-		   Major = register_chrdev(0, DEVICE_NAME, &lkmdata_fops);
-		      if (Major<0){
-		         printk(KERN_ALERT "chardev failed to register a major number\n");
-		         return Major;
-		      }
+	int ret_val;
+	ret_val = 0;
 
-		   // Register the device class
-		   chardevClass = class_create(THIS_MODULE, CLASS_NAME);
-		   if (IS_ERR(chardevClass)){
-		      unregister_chrdev(Major, DEVICE_NAME);
-		      printk(KERN_ALERT "Failed to register device class\n");
-		      return PTR_ERR(chardevClass);
-		   }
+	   printk(KERN_INFO "piio: Initializing the piio\n");
+	   MajorNum = register_chrdev(0, DEVICE_NAME, &Fops);
+	      if (MajorNum<0){
+	         printk(KERN_ALERT "piio: failed to register a major number\n");
+	         return MajorNum;
+	      }
+	   printk(KERN_INFO "piio: registered with major number %d\n", MajorNum);
 
-		   // Register the device driver
-		   chardevDevice = device_create(chardevClass, NULL, MKDEV(Major, 0), NULL, DEVICE_NAME);
-		   if (IS_ERR(chardevDevice)){
-		      class_destroy(chardevClass);
-		      unregister_chrdev(Major, DEVICE_NAME);
-		      printk(KERN_ALERT "Failed to create the device\n");
-		      return PTR_ERR(chardevDevice);
-		   }
-   return 0;
+	   ClassName = class_create(THIS_MODULE, CLASS_NAME);
+	   if (IS_ERR(ClassName)){
+	      unregister_chrdev(MajorNum, DEVICE_NAME);
+	      printk(KERN_ALERT "piio: Failed to register device class\n");
+	      return PTR_ERR(ClassName);
+	   }
+	   printk(KERN_INFO "piio: device class registered\n");
+
+	   DeviceName = device_create(ClassName, NULL, MKDEV(MajorNum, 0), NULL, DEVICE_NAME);
+	   if (IS_ERR(DeviceName)){
+	      class_destroy(ClassName);
+	      unregister_chrdev(MajorNum, DEVICE_NAME);
+	      printk(KERN_ALERT "piio: Failed to create the device\n");
+	      return PTR_ERR(DeviceName);
+	   }
+	   printk(KERN_INFO "piio: device class created\n");
+
+	return 0;
 }
 
 static void __exit piio_exit(void){
-	   gpio_set_value(23, 0);
-   	   gpio_unexport(23);
-   	   gpio_free(23);
-	   device_destroy(chardevClass, MKDEV(Major, 0));
-	   class_unregister(chardevClass);
-	   class_destroy(chardevClass);
-	   unregister_chrdev(Major, DEVICE_NAME);
+	   device_destroy(ClassName, MKDEV(MajorNum, 0));
+	   class_unregister(ClassName);
+	   class_destroy(ClassName);
+	   unregister_chrdev(MajorNum, DEVICE_NAME);
+	   gpio_free(apin.pin);
+	   printk(KERN_INFO "piio: Module removed\n");
 }
-
 module_init(piio_init);
 module_exit(piio_exit);
+MODULE_LICENSE("GPL");
+MODULE_AUTHOR("asdasd");
+MODULE_DESCRIPTION("RPi GPIO Driver");
+MODULE_VERSION("0.1.4");
